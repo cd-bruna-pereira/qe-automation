@@ -1,81 +1,101 @@
-# Automação de Convergência - Quantum ESPRESSO
+# Análise de energia do Quantum ESPRESSO
 
-Esta solução é uma plataforma interativa desenvolvida em Python e Streamlit para automatizar testes de convergência de parâmetros de entrada (como ecutwfc e ecutrho) no Quantum ESPRESSO, executando cálculos em supercomputadores remotos via SSH e SFTP.
+Aplicação Streamlit que acessa um supercomputador por SSH, lê arquivos `.out` de uma pasta remota e apresenta os valores de `Final energy` e `DeltaE` em uma tabela e em um gráfico.
 
----
+## Pré-requisitos
 
-## 1. Estrutura do Projeto
+- Python 3.8 ou superior.
+- Acesso SSH ao supercomputador.
+- Uma chave privada SSH válida, disponível em `~/.ssh` ou em um arquivo que possa ser enviado pela aplicação.
+- Arquivos de saída do Quantum ESPRESSO com extensão `.out`.
 
-* app.py: Interface gráfica interativa construída em Streamlit.
-* ssh_manager.py: Módulo responsável pela autenticação SSH, transferência de arquivos via SFTP e execução de comandos no cluster.
-* qe_engine.py: Módulo responsável por atualizar parâmetros nos arquivos de input (.in) e extrair a energia total dos arquivos de saída (.out).
-* requirements.txt: Dependências do projeto Python.
-* run.sh: Script de inicialização para sistemas Linux e macOS.
-* run.bat: Script de inicialização para sistemas Windows.
+## Instalação e inicialização
 
----
+### Linux ou macOS
 
-## 2. Pré-requisitos
+No terminal, dentro da pasta do projeto:
 
-* Python 3.8 ou superior instalado localmente.
-* Acesso SSH a um cluster/supercomputador com Quantum ESPRESSO e gerenciador de filas (ex: Slurm).
-* Chave SSH cadastrada no cluster (chave privada local em ~/.ssh ou arquivo .pem/.id_rsa para upload).
+```bash
+chmod +x run.sh
+./run.sh
+```
 
----
+O script cria o ambiente virtual, instala as dependências e inicia o Streamlit.
 
-## 3. Como Rodar a Solução
+### Windows
 
-### No Linux / macOS
+Execute `run.bat` pelo Explorador de Arquivos ou pelo Prompt de Comando, dentro da pasta do projeto.
 
-1. Abra o terminal no diretório do projeto.
-2. Torne o script de inicialização executável:
-   chmod +x run.sh
-3. Execute o script:
-   ./run.sh
+Depois da inicialização, abra no navegador o endereço exibido pelo Streamlit, normalmente:
 
-O script criará o ambiente virtual (.venv), instalará as dependências do arquivo requirements.txt e iniciará o dashboard no navegador.
+```text
+http://localhost:8501
+```
 
-### No Windows
+## Como usar
 
-1. Dê um duplo clique no arquivo run.bat ou abra o Prompt de Comando (CMD) / PowerShell no diretório do projeto.
-2. Execute o comando:
-   run.bat
+1. Na barra lateral, informe o **Host / IP** do supercomputador.
+2. Informe a **Porta SSH**, normalmente `22`.
+3. Informe o **Usuário** usado no acesso remoto.
+4. Escolha uma forma de autenticação:
+	- **Chave local**: selecione uma chave detectada em `~/.ssh` ou informe o caminho completo dela.
+	- **Upload de chave privada**: envie o arquivo da chave pela interface.
+5. Informe a passphrase da chave, caso ela possua uma.
+6. No campo **Pasta remota com os arquivos .out**, informe o caminho da pasta no supercomputador. Use `.` para a pasta inicial da sessão SSH ou informe um caminho absoluto, como `/home/usuario/calculos`.
+7. Clique em **Ler arquivos e analisar**.
 
-O script criará o ambiente virtual, instalará as bibliotecas necessárias e abrirá a interface no seu navegador padrão.
+A aplicação conecta ao supercomputador, localiza todos os arquivos `.out` diretamente na pasta informada e lê cada arquivo.
 
----
+## Formato dos arquivos
 
-## 4. Como Usar a Aplicação
+Cada arquivo precisa conter uma linha no seguinte formato:
 
-### Passo 1: Configurar a Conexão SSH
-Na barra lateral esquerda:
-1. Informe o Host/IP, Porta (padrão 22) e Usuário do cluster.
-2. Selecione o Método de Autenticação:
-   * Chave Local Detectada: O sistema busca automaticamente chaves no diretório ~/.ssh (Linux/macOS) ou %USERPROFILE%\.ssh (Windows).
-   * Upload de Chave Privada: Permite enviar um arquivo de chave privada (.pem, .id_rsa) diretamente pela interface.
-3. Se a sua chave possuir senha, preencha o campo Passphrase da chave.
-4. Informe o Diretório Remoto de Trabalho (ex: ~/qe_runs).
-5. Clique no botão Testar Conexão para validar o acesso ao cluster e as permissões de escrita.
+```text
+Final energy = -114.123456
+```
 
-### Passo 2: Configurar o Input e os Parâmetros de Teste
-Na aba Configuração do Input:
-1. Faça o upload do arquivo de entrada base do Quantum ESPRESSO (.in). Caso nenhum arquivo seja enviado, um modelo padrão de Silício será utilizado.
-2. Selecione o Parâmetro para Teste (ex: ecutwfc ou ecutrho).
-3. Defina os valores do teste:
-   * Valor Inicial (ex: 30.0)
-   * Valor Final (ex: 80.0)
-   * Passo (ex: 10.0)
-4. Defina a Tolerância de Convergência ΔE em Ry (ex: 0.001 Ry).
-5. Ajuste o Script de Submissão Slurm conforme as especificações do seu cluster (número de nós, tarefas, módulos, etc.).
+Também são aceitos valores em notação científica, por exemplo:
 
-### Passo 3: Executar e Monitorar
-Na aba Execução & Monitoramento:
-1. Clique no botão Iniciar Loop de Convergência.
-2. A aplicação enviará sequencialmente os arquivos .in e os scripts de submissão para o cluster, executará os jobs e monitorará o término de cada cálculo.
-3. O gráfico de linha em tempo real atualizará a cada ponto calculado (Energia Total vs. Parâmetro).
-4. O loop interromperá automaticamente quando a diferença de energia entre dois passos consecutivos for menor ou igual à tolerância estabelecida, ou ao atingir o valor final do intervalo.
+```text
+Final energy = -1.14123456e+02
+```
 
-### Passo 4: Visualizar e Exportar Resultados
-Na aba Resultados:
-1. Visualize a tabela consolidada contendo o valor do parâmetro, energia total acumulada, variação de energia (ΔE) e status de convergência.
-2. Clique no botão Exportar Tabela de Resultados (CSV) para baixar os dados brutos para análise posterior.
+Arquivos `.out` que não contêm uma linha válida de `Final energy` são ignorados. A busca não diferencia letras maiúsculas de minúsculas.
+
+## Resultados
+
+A tabela apresenta:
+
+- **Arquivo**: nome do arquivo `.out`.
+- **Final energy**: valor extraído do arquivo.
+- **DeltaE**: diferença entre a energia do arquivo e a menor energia encontrada.
+
+O cálculo é:
+
+```text
+DeltaE = Final energy - menor Final energy
+```
+
+Consequentemente, o menor valor de energia sempre terá `DeltaE = 0`.
+
+O gráfico exibe os arquivos em ordem alfabética no eixo X e os valores de `DeltaE` no eixo Y. Os pontos representam os valores calculados e a linha suavizada representa a interpolação visual entre eles.
+
+Use **Baixar tabela CSV** para exportar os resultados e analisá-los em outra ferramenta.
+
+## Problemas comuns
+
+### Nenhuma chave privada foi encontrada
+
+Verifique se a chave está em `~/.ssh`, informe seu caminho completo no campo **Caminho da chave** ou use a opção de upload.
+
+### Falha na conexão SSH
+
+Confira o host, a porta, o usuário, a chave e a passphrase. Também confirme que a máquina onde o Streamlit está rodando tem acesso à rede do supercomputador.
+
+### Nenhum arquivo `.out` foi encontrado
+
+Confira o caminho da pasta remota e se os arquivos estão diretamente nela. A aplicação não pesquisa subpastas.
+
+### Os arquivos foram encontrados, mas não há resultados
+
+Abra um dos arquivos e confirme se existe uma linha `Final energy = valor`. Arquivos sem essa linha são desconsiderados.

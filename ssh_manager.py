@@ -115,6 +115,22 @@ class SSHConnector:
         sftp.close()
         return content
 
+    def list_remote_out_files(self, remote_dir):
+        """Retorna os arquivos .out da pasta remota, em ordem alfabética."""
+        if not self.client:
+            raise ConnectionError("Cliente SSH não está conectado.")
+
+        sftp = self.client.open_sftp()
+        try:
+            entries = sftp.listdir_attr(remote_dir)
+            return [
+                entry.filename
+                for entry in sorted(entries, key=lambda item: item.filename.lower())
+                if entry.filename.lower().endswith(".out")
+            ]
+        finally:
+            sftp.close()
+
     def close(self):
         """Fecha a conexão SSH atenta."""
         if self.client:

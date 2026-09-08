@@ -1,213 +1,131 @@
-import os
-import time
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
-from qe_engine import check_convergence, parse_total_energy, update_input_param
+from qe_engine import calculate_delta_energies, parse_final_energy
 from ssh_manager import SSHConnector, discover_local_ssh_keys
 
-st.set_page_config(page_title="QE Convergence Automation", layout="wide")
 
-st.title("Automação de Convergência — Quantum ESPRESSO")
+st.set_page_config(page_title="Análise de Final Energy", layout="wide")
+st.title("Análise de energia no supercomputador")
+st.caption("Leia os arquivos .out de uma pasta remota, compare as energias e visualize o DeltaE.")
 
-# Inicialização de variáveis de sessão
-if "history" not in st.session_state:
-    st.session_state.history = []
-if "running" not in st.session_state:
-    st.session_state.running = False
 
-# Sidebar: Configuração SSH
-st.sidebar.header("Conexão com o Supercomputador")
-host = st.sidebar.text_input("Host / IP", value="cluster.hpc.br")
-port = st.sidebar.number_input("Porta", value=22, step=1)
-username = st.sidebar.text_input("Usuário", value="pesquisador")
-
-auth_type = st.sidebar.radio(
-    "Método de Autenticação",
-    ["Chave Local Detectada", "Upload de Chave Privada"],
-)
-
-key_path = None
-key_buffer = None
-
-if auth_type == "Chave Local Detectada":
-    detected_keys = discover_local_ssh_keys()
-    if detected_keys:
-        key_path = st.sidebar.selectbox("Selecione a chave", detected_keys)
-    else:
-        st.sidebar.warning("Nenhuma chave encontrada na pasta ~/.ssh ou %USERPROFILE%/.ssh")
-        key_path = st.sidebar.text_input("Caminho absoluto da chave local")
-else:
-    uploaded_file = st.sidebar.file_uploader("Upload da chave (.pem / .id_rsa)", type=None)
-    if uploaded_file:
-        key_buffer = uploaded_file.getvalue().decode("utf-8")
-
-passphrase = st.sidebar.text_input("Passphrase da chave (opcional)", type="password")
-remote_work_dir = st.sidebar.text_input("Diretório Remoto de Trabalho", value="~/qe_runs")
-
-# Botão de Teste de Conexão
-if st.sidebar.button("Testar Conexão"):
+def connect_to_cluster(host, port, username, key_path, key_buffer, passphrase):
     connector = SSHConnector(host=host, port=port, username=username)
-    success, msg = connector.test_connection(
+    connector.connect(
         key_path=key_path,
         key_buffer=key_buffer,
-        passphrase=passphrase if passphrase else None,
-        remote_dir=remote_work_dir,
+        passphrase=passphrase or None,
     )
-    if success:
-        st.sidebar.success(msg)
+    return connector
+
+
+with st.sidebar:
+    st.header("Conexão SSH")
+    host = st.text_input("Host / IP")
+    port = st.number_input("Porta", min_value=1, max_value=65535, value=22, step=1)
+    username = st.text_input("Usuário")
+
+    auth_type = st.radio("Autenticação", ["Chave local", "Upload de chave privada"])
+    key_path = None
+    key_buffer = None
+    if auth_type == "Chave local":
+        detected_keys = discover_local_ssh_keys()
+        key_path = st.selectbox("Chave privada", detected_keys) if detected_keys else None
+        if not key_path:
+            st.warning("Nenhuma chave privada foi encontrada em ~/.ssh.")
+            key_path = st.text_input("Caminho da chave")
     else:
-        st.sidebar.error(msg)
+        uploaded_key = st.file_uploader("Arquivo da chave privada")
+        if uploaded_key:
+            key_buffer = uploaded_key.getvalue().decode("utf-8")
 
-# Aba Principal
-tab_config, tab_run, tab_results = st.tabs(
-    ["Configuração do Input", "Execução & Monitoramento", "Resultados"]
-)
+    passphrase = st.text_input("Passphrase (opcional)", type="password")
+    remote_dir = st.text_input("Pasta remota com os arquivos .out", value=".")
+    analyze = st.button("Ler arquivos e analisar", type="primary")
 
-with tab_config:
-    st.subheader("Parâmetros do Quantum ESPRESSO")
-    uploaded_in = st.file_uploader("Arquivo de entrada base (.in)", type=["in", "txt"])
 
-    if uploaded_in:
-        input_base_content = uploaded_in.getvalue().decode("utf-8")
-        st.text_area("Pré-visualização do Input Base", input_base_content, height=180)
+if analyze:
+    missing_fields = [
+        label
+        for label, value in [
+            ("Host / IP", host),
+            ("Usuário", username),
+            ("Pasta remota", remote_dir),
+        ]
+        if not value
+    ]
+    out_files = []
+    rows = []
+    if missing_fields:
+        st.error(f"Preencha: {', '.join(missing_fields)}.")
+    elif auth_type == "Chave local" and not key_path:
+        st.error("Selecione ou informe uma chave privada.")
+    elif auth_type == "Upload de chave privada" and not key_buffer:
+        st.error("Envie uma chave privada.")
     else:
-        input_base_content = "&CONTROL\n  calculation = 'scf'\n/\n&SYSTEM\n  ibrav = 1, celldm(1) = 7.0, nat = 1, ntyp = 1\n  ecutwfc = 30.0\n/\n&ELECTRONS\n/\nATOMIC_SPECIES\n  Si 28.085 Si.pbe-rrkjus.UPF\nATOMIC_POSITIONS (alat)\n  Si 0.0 0.0 0.0\nK_POINTS (automatic)\n  4 4 4 0 0 0"
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        param_to_test = st.selectbox("Parâmetro para Teste", ["ecutwfc", "ecutrho"])
-    with col2:
-        val_start = st.number_input("Valor Inicial", value=30.0, step=5.0)
-    with col3:
-        val_stop = st.number_input("Valor Final", value=80.0, step=5.0)
-    with col4:
-        val_step = st.number_input("Passo", value=10.0, step=5.0)
-
-    tolerance = st.number_input(
-        "Tolerância de Convergência ΔE (Ry)",
-        value=0.001,
-        format="%.4f",
-    )
-
-    sbatch_script = st.text_area(
-        "Script de Submissão Slurm (Exemplo)",
-        value=f"#!/bin/bash\n#SBATCH --job-name=qe_conv\n#SBATCH --nodes=1\n#SBATCH --ntasks=32\n\ncd {remote_work_dir}\nmpirun -np 32 pw.x -in run.in > run.out",
-        height=120,
-    )
-
-with tab_run:
-    st.subheader("Controle de Execução")
-
-    if st.button("Iniciar Loop de Convergência", disabled=st.session_state.running):
-        st.session_state.running = True
-        st.session_state.history = []
-
-        connector = SSHConnector(host=host, port=port, username=username)
-
+        connector = None
         try:
-            connector.connect(
-                key_path=key_path,
-                key_buffer=key_buffer,
-                passphrase=passphrase if passphrase else None,
+            with st.spinner("Conectando e lendo os arquivos .out..."):
+                connector = connect_to_cluster(
+                    host, port, username, key_path, key_buffer, passphrase
+                )
+                out_files = connector.list_remote_out_files(remote_dir)
+                for filename in out_files:
+                    remote_path = f"{remote_dir.rstrip('/')}/{filename}"
+                    content = connector.read_remote_file(remote_path)
+                    energy = parse_final_energy(content)
+                    if energy is not None:
+                        rows.append({"Arquivo": filename, "Final energy": energy})
+        except Exception as error:
+            st.error(f"Não foi possível analisar a pasta remota: {error}")
+        finally:
+            if connector:
+                connector.close()
+
+        if not out_files:
+            st.warning("Nenhum arquivo .out foi encontrado nessa pasta.")
+        elif not rows:
+            st.warning('Os arquivos .out encontrados não possuem uma linha "Final energy = x".')
+        else:
+            energies = [row["Final energy"] for row in rows]
+            for row, delta_e in zip(rows, calculate_delta_energies(energies)):
+                row["DeltaE"] = delta_e
+
+            results = pd.DataFrame(rows)
+            st.subheader("Resultados")
+            st.dataframe(results, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Baixar tabela CSV",
+                results.to_csv(index=False).encode("utf-8"),
+                "final_energy_results.csv",
+                "text/csv",
             )
-            connector.execute_command(f"mkdir -p {remote_work_dir}")
 
-            current_val = val_start
-            energies = []
-            values_tested = []
-
-            plot_spot = st.empty()
-            status_spot = st.empty()
-
-            while current_val <= val_stop and st.session_state.running:
-                status_spot.info(f"Executando cálculo para {param_to_test} = {current_val}...")
-
-                # Gerar e enviar input atualizado
-                current_input = update_input_param(input_base_content, param_to_test, current_val)
-                connector.upload_string_as_file(
-                    current_input,
-                    f"{remote_work_dir}/run.in",
+            figure = go.Figure()
+            figure.add_trace(
+                go.Scatter(
+                    x=results["Arquivo"],
+                    y=results["DeltaE"],
+                    mode="markers",
+                    name="DeltaE",
                 )
-                connector.upload_string_as_file(
-                    sbatch_script,
-                    f"{remote_work_dir}/job.sh",
-                )
-
-                # Submeter Job
-                exit_code, out, err = connector.execute_command(
-                    f"cd {remote_work_dir} && sbatch job.sh"
-                )
-                job_id = out.strip().split()[-1] if exit_code == 0 else "LOCAL_EXEC"
-
-                # Monitoramento da execução
-                complete = False
-                while not complete:
-                    time.sleep(3)
-                    # Verifica se o arquivo run.out foi gerado e finalizou
-                    exit_code, out_content, _ = connector.execute_command(
-                        f"cat {remote_work_dir}/run.out"
+            )
+            if len(results) >= 2:
+                figure.add_trace(
+                    go.Scatter(
+                        x=results["Arquivo"],
+                        y=results["DeltaE"],
+                        mode="lines",
+                        name="Interpolação",
+                        line_shape="spline",
                     )
-                    if "JOB DONE." in out_content or "End of calculation" in out_content:
-                        complete = True
-
-                # Leitura e parsing dos resultados
-                energy = parse_total_energy(out_content)
-
-                if energy is not None:
-                    energies.append(energy)
-                    values_tested.append(current_val)
-
-                    is_conv, delta_e = check_convergence(energies, tolerance)
-
-                    st.session_state.history.append({
-                        param_to_test: current_val,
-                        "Total Energy (Ry)": energy,
-                        "Delta E (Ry)": delta_e if delta_e else 0.0,
-                        "Status": "Convergido" if is_conv else "Em Progresso",
-                    })
-
-                    # Atualização do Gráfico em Tempo Real
-                    df_chart = pd.DataFrame(st.session_state.history)
-                    fig = px.line(
-                        df_chart,
-                        x=param_to_test,
-                        y="Total Energy (Ry)",
-                        markers=True,
-                        title=f"Convergência de Energia vs {param_to_test}",
-                    )
-                    plot_spot.plotly_chart(fig, use_container_width=True)
-
-                    if is_conv:
-                        status_spot.success(
-                            f"Convergência atingida em {param_to_test} = {current_val}! "
-                            f"(ΔE = {delta_e:.6f} Ry <= {tolerance} Ry)"
-                        )
-                        st.session_state.running = False
-                        break
-
-                current_val += val_step
-
-            connector.close()
-            st.session_state.running = False
-
-        except Exception as e:
-            st.error(f"Erro na execução do workflow: {str(e)}")
-            st.session_state.running = False
-
-with tab_results:
-    st.subheader("Relatório Final de Convergência")
-    if st.session_state.history:
-        df_results = pd.DataFrame(st.session_state.history)
-        st.dataframe(df_results, use_container_width=True)
-
-        csv_data = df_results.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Exportar Tabela de Resultados (CSV)",
-            data=csv_data,
-            file_name="qe_convergence_results.csv",
-            mime="text/csv",
-        )
-    else:
-        st.info("Nenhum dado de execução disponível no momento.")
+                )
+            figure.update_layout(
+                title="DeltaE por arquivo",
+                xaxis_title="Arquivo",
+                yaxis_title="DeltaE",
+                xaxis={"type": "category"},
+            )
+            st.plotly_chart(figure, use_container_width=True)

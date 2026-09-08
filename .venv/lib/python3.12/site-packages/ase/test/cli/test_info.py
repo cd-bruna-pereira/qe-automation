@@ -1,0 +1,44 @@
+import pytest
+
+from ase.build import bulk
+from ase.io import write
+
+
+def test_info(cli):
+    assert 'numpy' in cli.ase('info')
+
+
+def test_info_formats(cli):
+    output = cli.ase('info', '--formats')
+
+    assert (
+        'espresso-out [r/multi, ext=pwo|out]: Quantum espresso out file'
+        in output
+    )
+    assert (
+        'dlp4 [rw/single, ext=config, glob=*CONFIG*]: DL_POLY_4 CONFIG file'
+        in output
+    )
+    assert 'gen [rw/single]: DFTBPlus GEN format' in output
+
+
+def test_info_calculators(cli):
+    # The configuration listing will contain all configurable calculators
+    # whether they are configured or not.
+    assert 'nwchem' in cli.ase('info', '--calculators')
+
+
+@pytest.fixture()
+def fname(testdir):
+    atoms = bulk('Au')
+    filename = 'file.traj'
+    write(filename, atoms)
+    return filename
+
+
+def test_info_file_ok(cli, fname):
+    assert 'trajectory' in cli.ase('info', '--files', fname)
+
+
+def test_info_file_fail(cli):
+    cli.ase('info', '--files', 'nonexistent_file.traj', expect_fail=True)
